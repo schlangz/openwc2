@@ -269,9 +269,41 @@ instant real playback stops. Leaves `ServiceSoundSystem`'s grace-period/
 force-advance logic completely untouched; this is purely an additive
 check in the mouth animator.
 
+### Bug 5: the *script itself* was blocked by the same grace period, not just the mouth
+
+Bug 4's fix confirmed working, but a new symptom appeared: the *next
+voice line* now visibly waited for the mouth to "finish" before
+starting -- not a mouth-visual bug anymore, a real playback delay.
+
+Root cause: bugs 1-4 all fixed how `AnimateCutsceneSpeakerMouth`
+*renders*, but none of them changed *when the underlying flags
+actually clear* -- `g_bCutsceneTextAdvance_005d2ed0`/
+`g_bCutsceneSpeechActive_00499eb8`/the speech cursor were still only
+reset inside `ServiceSoundSystem`'s original `> 20`-tick branch. That
+matters beyond rendering: the cutscene *script itself* directly reads
+`g_bCutsceneTextAdvance_005d2ed0` (opcode `0x9c`,
+`PushCutsceneScriptValue`, `screens.c`) -- confirming the bytecode has
+its own "wait while still talking" loop before advancing to the next
+instruction. Leaving that flag set for the full grace period didn't
+just leave the mouth animating too long (already fixed) -- it blocked
+the *next script line* from starting for that same window, worst case
+for consecutive same-character lines (same reasoning as bug 3: less
+intervening script time for pre-caching to help).
+
+**Fix applied**: restructured `ServiceSoundSystem` so the flag/sprite
+reset fires the instant audio is observed stopped, while
+`g_nInputPressCount_0049c258`'s own force-advance timing (a separate,
+unrelated concern -- when to give up and simulate an input press if
+nothing else happens) keeps its original ~20-tick delay unchanged. The
+outer re-entry gate moved from `g_bSpeechSoundActive_004a2660` (which
+this branch itself clears, so it could no longer double as the
+immediate-reset one-shot flag) to `g_nSpeechCompletionDelay_004a265c`
+directly, which already resets to `0` on every new clip
+(`PlayRawSpeechSound`) the same way.
+
 ### Status
 
-All four fixes are implemented, syntax-verified against the project's
+All five fixes are implemented, syntax-verified against the project's
 real compiler flags, and pushed to a branch on this project's `wc2-re`
 fork for in-game testing before any upstream PR -- see that repo's own
 commit history on branch `fix/cutscene-speech-complete-framerate-spike`
