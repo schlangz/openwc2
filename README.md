@@ -42,8 +42,10 @@ other in-game cutscene. See `docs/` for the full write-up.
   directly, corrects an earlier mislabeled DOS function (it's the
   per-character speaker-mouth animator, not a decompressor), includes
   the real per-letter mouth-shape/duration tables, and traces the root
-  cause of Kilrathi Saga's cutscene mouth/audio desync to a confirmed
-  units mismatch plus a real frame-timing bug -- with a proposed fix.
+  cause of Kilrathi Saga's cutscene mouth/audio desync through six
+  separate bugs (frame-timing, an opcode divisor, two unsynchronized
+  script/audio flags, and a delete-on-stop pointer-nulling race), all
+  fixed in a `wc2-re` fork branch.
 
 ## Tooling
 

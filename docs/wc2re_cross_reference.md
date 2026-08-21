@@ -167,7 +167,7 @@ deadline. That part of the architecture is sound -- a full "decouple
 everything from the render loop" rewrite is **not** the right fix and
 was not implemented.
 
-Two real, separate, much more surgical bugs were found and fixed
+Several real, separate, much more surgical bugs were found and fixed
 instead:
 
 ### Bug 1: `SetCinematicFrameTiming(70.0f)` is a symptom patch for a real problem, not an isolated bug
@@ -301,13 +301,55 @@ immediate-reset one-shot flag) to `g_nSpeechCompletionDelay_004a265c`
 directly, which already resets to `0` on every new clip
 (`PlayRawSpeechSound`) the same way.
 
+### Bug 6: the delete-on-stop sound handle goes null before the stopped-check ever runs
+
+Bug 5's fix still left a residual gap between consecutive lines from
+the same speaker. Instrumented `ServiceSoundSystem` and
+`AnimateCutsceneSpeakerMouth` with timestamped logging (`sound.c`/
+`screens.c`, `WC1_SDL`-gated, since removed) to get a real event
+timeline instead of reasoning from source alone.
+
+Captured sequence for a same-character back-to-back pair: script
+opcode `0x8a` arms the next line's mouth; the mouth's first
+per-letter frame advances with no `g_bSpeechSoundActive_004a2660`
+gate rejection; only ~70ms *after that* does `0xb0`/
+`PlayRawSpeechBuffer` actually start the new clip's audio. Since
+`g_bSpeechSoundActive_004a2660` is set to `1` only by
+`PlayRawSpeechBuffer`, it being already `1` before that call ran means
+it was never cleared for the *previous* line -- and indeed no
+"speech stopped" event appears anywhere in the captured log for that
+prior clip.
+
+Root cause, in the SDL port's own `WC1_SDL`-only code in
+`ServiceSoundSystem` (`sound.c`): the speech sound is created
+delete-on-stop, so `ix_system_service_sounds()` (called at the top of
+the function) can free it the same frame it finishes playing. The
+existing code checked `ix_sound_is_live(g_pSpeechSound_004a2658)` and
+nulled the pointer to `0` *before* the stopped-check below it. When
+the object was freed that same frame, the pointer was already `0` by
+the time the stopped-check ran (`g_pSpeechSound_004a2658 != 0`), so
+that whole block -- including the `g_bSpeechSoundActive_004a2660`
+reset from bug 5's fix -- was silently skipped for that clip. The
+flag then stayed `1` indefinitely, letting the next line's mouth
+animate immediately once armed, regardless of whether its own audio
+had actually started.
+
+**Fix applied**: evaluate liveness into a local (`speechIsLive`)
+before touching `g_pSpeechSound_004a2658`, run the stopped-check/reset
+using the still-valid pointer value (short-circuiting so a freed
+handle's `ix_sound_is_playing()` is never called), and only null the
+pointer afterward.
+
 ### Status
 
-All five fixes are implemented, syntax-verified against the project's
+All six fixes are implemented, syntax-verified against the project's
 real compiler flags, and pushed to a branch on this project's `wc2-re`
-fork for in-game testing before any upstream PR -- see that repo's own
-commit history on branch `fix/cutscene-speech-complete-framerate-spike`
-for the exact diffs and full reasoning in each commit message.
+fork -- see that repo's own commit history on branch
+`fix/cutscene-speech-complete-framerate-spike` for the exact diffs and
+full reasoning in each commit message. Bugs 1-5 were confirmed
+in-game by playtesting between fixes; bug 6 was found via a
+timestamped-logging capture after bug 5 alone left a residual gap,
+and is pending final in-game confirmation before an upstream PR.
 
 ## The Win32-side resource loader (`FetchDiskPacketRetrying`, `disk.c`)
 
