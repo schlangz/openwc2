@@ -172,16 +172,21 @@ rate -- some letters hold noticeably longer than others by design (see
 the real per-letter tables in `wc2re_cross_reference.md`), not a
 constant interval. On the Win32 side that "tick" is confirmed to be a
 fixed 1/60s unit of *real elapsed wall-clock time*
-(`g_nInputClock_005c84a8`), independent of and finer-grained than the
-20Hz render rate -- and that mismatch is the direct, confirmed cause
-of Kilrathi Saga's cutscene mouth/audio desync. See
+(`g_nInputClock_005c84a8`), and the frame-present loop that consumes it
+is itself a correct real-time busy-wait -- **not** a naive
+once-per-render-call advance as first assumed. Kilrathi Saga's cutscene
+desync instead traces to two much more specific, separate bugs: mouth
+animation runs from caption text independent of the real (recorded VO)
+audio clip's actual length, and one script opcode's fps-to-tick-delay
+conversion divides by `59` instead of `60`. See
 `wc2re_cross_reference.md`'s "Why Kilrathi Saga's cutscenes desync"
-section for the full analysis and a proposed fix. The DOS duration
+section for the full trace and the fixes applied. The DOS duration
 table almost certainly works the same way in spirit (a real-time tick
-unit, not a frame-count) -- but on DOS both the render cadence and the
-tick source are the *same* hardware-locked 20Hz PIT interrupt (see the
-timer section below), so the two can never drift apart the way they do
-on Win32.
+unit, not a frame-count) -- but DOS's speech and mouth-shape data both
+came from the same original authoring pass (synthesized speech tuned
+against this exact table), so the mismatch bug 1 describes couldn't
+arise there the way it does against substituted, independently-timed
+recorded audio.
 
 The `repe movsw`/`rcl cx,1`/`repe movsb` bulk-copy loop observed live,
 mid-execution, feeding off this function's output is consistent with

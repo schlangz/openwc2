@@ -153,80 +153,75 @@ independently: `WC2_CUTSCENE_MOUTH_MIN_TICKS = 3` (above) is exactly
 frame period -- the SDL port's clamp is, in its own units, "never hold
 for less than one 20fps frame."
 
-**The bug**: the mouth-duration table is authored in this same 1/60s
-unit, but almost every letter has `duration = 1` -- a **16.7ms** hold
-at `speechSpeed = 1`, well *under* one 20fps frame period (50ms).
-Since mouth state only advances when something actually calls
-`AnimateCutsceneSpeakerMouth` again -- which happens once per rendered
-frame, not on an independent fixed-rate update -- any requested hold
-shorter than the current frame interval is meaningless: by the time
-the next check happens, more real time has already elapsed than was
-asked for, so the shape always advances "as fast as frames get drawn,"
-never at its own intended rate. The comparison against `g_nInputClock`
-is correctly wall-clock-based in principle; what's missing is
-decoupling *how often that comparison gets evaluated* from *how often
-a frame gets rendered*.
+**Correction after tracing further**: the initial hypothesis here was
+that mouth state (and cutscene state generally) only advances once per
+*rendered* frame, with no independent fixed-rate update -- i.e. that
+the whole engine needed decoupling from the render loop. Tracing the
+actual frame-present script opcode (`case 0x7c` in `RunCutsceneScript`,
+`screens.c`) disproves that: it already does a correct real-time
+busy-wait (`while (g_nInputClock < g_nNextCutsceneFrameClock)
+PumpWindowMessages(0);`, and `PumpWindowMessages` is confirmed to be
+`g_nInputClock`'s own refresh site, called on every iteration of that
+wait) before presenting each frame and re-arming the next frame's
+deadline. That part of the architecture is sound -- a full "decouple
+everything from the render loop" rewrite is **not** the right fix and
+was not implemented.
 
-That would just mean "mouth flips once per frame, always" if the frame
-rate were rock-steady -- annoying, but not "extreme desync." It becomes
-that once combined with something already found and documented in this
-project's own DOS-side timer analysis, that carries over structurally
-here too: Win32's frame pacing is not hardware-clocked the way DOS's
-PIT-driven interrupt is. It runs through `timeSetEvent`/`timeGetTime`
-plus a busy-wait `Sleep(0)` throttle loop (`ThrottleFrameAndDrawFps`,
-`screen.c`) -- inherently jittery, worse on modern fast/multi-core
-hardware than in 1996 -- and, concretely, the *Kilrathi Saga* source
-has a confirmed real bug where `SetCinematicFrameTiming(70.0f)` fires
-the instant a line of speech finishes (`sound.c`, `ServiceSoundSystem`),
-spiking the cinematic rate from 20fps to 70fps for a window right at
-the exact moment mouth state needs to settle back to neutral. Audio
-keeps playing at its own real-time-accurate pace throughout (driven by
-the sound hardware/API, unaffected by any of this) -- visual mouth
-state, being coupled to however fast frames happen to render rather
-than to the clock it's nominally compared against, drifts against it.
-Over a whole cutscene with many speech lines, each one hitting this at
-its end, that compounds into exactly the kind of pervasive, worsening
-desync reported for this game.
+Two real, separate, much more surgical bugs were found and fixed
+instead:
 
-DOS structurally cannot exhibit this: the frame-advance interrupt and
-the tick source used for duration-counting are the *same* hardware PIT
-interrupt (see `cutscene_dispatcher.md`'s timer section), so "requested
-hold shorter than one frame" cannot happen there -- the frame period
-*is* the tick, by construction, not merely convention.
+### Bug 1: `SetCinematicFrameTiming(70.0f)` is a symptom patch for a real problem, not an isolated bug
 
-### A concrete fix for `wc2-re`
+`AnimateCutsceneSpeakerMouth` drives the mouth from the caption *text*,
+at its own per-letter pace, entirely independent of how long the
+actual speech *audio* clip runs. On this Kilrathi Saga release the
+audio is real recorded voice acting (unlike the DOS original's
+synthesized speech), so nothing guarantees the text-driven mouth
+timing still matches the recorded clip's real length. If the audio
+finishes first, the mouth keeps moving with no sound playing --
+visibly broken. `ServiceSoundSystem`'s 20-tick grace period followed
+by `SetCinematicFrameTiming(70.0f)` (`sound.c`) is the original
+engine's own fix for exactly that: once audio's confirmed stopped,
+spike the frame rate to rush through whatever text-driven animation is
+still pending. Real motivation, bad implementation -- it also speeds
+up every other sprite/plane/sequence on screen for that window, not
+just the mouth, and the magic `70` appears nowhere else in the engine.
 
-Not tested against the actual codebase -- an architectural
-recommendation from this analysis, not a submitted/verified patch.
+**Fix applied**: perform the same reset `AnimateCutsceneSpeakerMouth`
+already does on its own once it notices speech is inactive, directly,
+at the exact point `ServiceSoundSystem` decides speech has truly
+ended -- clear the speech-active/text-advance flags and the speech
+cursor, and force the current speaker sprite's frame back to neutral
+(`11`) immediately, instead of either the original rate-spike hack or
+just leaving the text to finish at its own (now unmatched) pace.
 
-1. **Decouple cutscene-object state advancement (`AnimateCutsceneSpeakerMouth`
-   and the general `waitTicks`/`waitStart` consumption in `screens.c`)
-   from the render/frame loop.** Run it on its own fixed-rate update --
-   ideally every real 1/60s tick (matching `g_nInputClock`'s own native
-   unit exactly), independent of how often a frame actually gets drawn
-   to screen. This is the standard "decouple simulation rate from
-   render rate" fix, and it directly restores the property the DOS
-   binary gets for free from having one shared hardware clock: state
-   advances at the rate the data was authored for, rendering just
-   displays whatever the current state is whenever it gets around to
-   drawing a frame. This is the real fix -- everything below is
-   secondary/defense-in-depth.
-2. **Fix the confirmed `SetCinematicFrameTiming(70.0f)` bug directly**
-   (`sound.c`, fires when `g_nSpeechCompletionDelay_004a265c > 20`
-   after a speech sound stops). Whatever the intent was (snapping back
-   to a faster non-speaking rate), 70fps is not a value used anywhere
-   else in the engine and produces a jarring rate spike at exactly the
-   worst moment. Likely candidates: it should match whatever rate was
-   active *before* speech started (probably the default/menu rate, not
-   a magic 70), or this call should simply be removed if its only
-   effect is this spike.
-3. **Defense in depth, once (1) is fixed**: `ThrottleFrameAndDrawFps`'s
-   busy-wait (`while (timeGetTime() < deadline) Sleep(0)`) could be
-   replaced with a higher-resolution wait (`timeBeginPeriod(1)` +
-   `Sleep` for the bulk of the interval, spin only the remainder) for
-   more consistent real frame pacing generally -- worthwhile on its own
-   merits, but not the root cause here, and not sufficient by itself
-   without (1).
+### Bug 2: cutscene script opcode `0x8f`'s fps-to-tick-delay divisor is off by one
+
+Found while re-examining what "cutscenes running at different speeds"
+independently of the mouth-specific issue could mean. `RunCutsceneScript`
+(`screens.c`) has two script opcodes that set the per-scene frame rate:
+`0x8d` takes an already-computed tick delay straight from the script
+(no arithmetic), and `0x8f` takes a requested fps `value` and computes
+`g_nCutsceneFrameDelay_00499c8c = 0x3b / value` -- **59**, not **60**.
+Since `g_nInputClock` ticks in exact 1/60s units (confirmed above),
+converting fps to a tick delay is `60/value`; with integer division,
+`59/value` truncates to a *smaller* (faster) delay than `60/value` for
+nearly every requested rate -- e.g. a scene asking for 20fps gets
+`59/20=2` ticks/frame (~30fps, 50% too fast) instead of the correct
+`60/20=3` (20fps, matching the 20Hz rate used everywhere else in the
+engine). Different requested rates truncate by different amounts,
+which is exactly consistent with "some cutscenes noticeably too fast,
+others closer to correct" rather than one uniform speed error.
+
+**Fix applied**: `0x3b` -> `0x3c` (59 -> 60).
+
+### Status
+
+Both fixes are implemented, syntax-verified against the project's real
+compiler flags, and pushed to a branch on this project's `wc2-re` fork
+for in-game testing before any upstream PR -- see that repo's own
+commit history on branch `fix/cutscene-speech-complete-framerate-spike`
+for the exact diffs and full reasoning in each commit message.
 
 ## The Win32-side resource loader (`FetchDiskPacketRetrying`, `disk.c`)
 
