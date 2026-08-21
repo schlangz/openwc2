@@ -215,11 +215,45 @@ others closer to correct" rather than one uniform speed error.
 
 **Fix applied**: `0x3b` -> `0x3c` (59 -> 60).
 
+### Bug 3: mouth animation and speech-audio playback are unsynchronized script events
+
+After testing bug 1's fix in-game: the "mouth moves after audio stops"
+symptom was nearly gone, but a residual ~1s gap remained specifically
+when the *same character* speaks two lines in a row (audio pauses,
+mouth keeps moving) -- and specifically *not* when NPCs alternate.
+
+Traced to two independent script opcodes in `RunCutsceneScript`
+(`screens.c`): `0x8a` arms mouth animation
+(`g_bCutsceneTextAdvance_005d2ed0 = 1`) with no reference to audio
+state at all; `0xb0` plays the paired speech clip, either instantly
+from an already-warm cache (populated earlier by opcode `0xa2`,
+`LoadCutsceneSpeechSlot`) or, if that cache miss, via a fallback to
+`LoadAndPlaySpeechPacket` (`music.c`) -- a fully synchronous, blocking
+disk load with no message-pump interleaving of its own. Nothing
+connects these two opcodes: mouth animation starts the instant it's
+scripted to, regardless of whether the audio it's meant to lip-sync
+against has actually started producing sound.
+
+A same-character line immediately following another leaves markedly
+less script time for the `0xa2` pre-cache to complete than a speaker
+change naturally does (which involves more intervening script/opcode
+work) -- making the slow, synchronous fallback specifically more
+likely there. That matches the reported symptom precisely.
+
+**Fix applied**: `AnimateCutsceneSpeakerMouth` now also gates on
+`g_bSpeechSoundActive_004a2660` (set the instant real playback begins,
+in `PlayRawSpeechSound`/`PlayRawSpeechBuffer`, `sound.c`) -- holding
+the current frame instead of animating from text alone until audio is
+confirmed actually playing. **Lower confidence than bugs 1-2**: this
+is source-level reasoning from tracing the two opcodes and the flag
+semantics, not something verified against a live capture -- worth
+testing specifically for the same-character-repeat case.
+
 ### Status
 
-Both fixes are implemented, syntax-verified against the project's real
-compiler flags, and pushed to a branch on this project's `wc2-re` fork
-for in-game testing before any upstream PR -- see that repo's own
+All three fixes are implemented, syntax-verified against the project's
+real compiler flags, and pushed to a branch on this project's `wc2-re`
+fork for in-game testing before any upstream PR -- see that repo's own
 commit history on branch `fix/cutscene-speech-complete-framerate-spike`
 for the exact diffs and full reasoning in each commit message.
 
