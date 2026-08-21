@@ -12,6 +12,15 @@ heuristics), not a full formal chunk parser -- offsets and
 where a value overruns the heuristic's read window (noted inline
 where relevant).
 
+**Tag names below are provisional.** Cross-checking against `wc2-re`
+(see `wc2re_cross_reference.md`) confirmed `FORM`/`SCNE`/`PLNE`/
+`SEQU`/`SPRT` directly, but found the real Win32-side tag set also
+includes `DATA`/`SCRP`/`HOTR`/`HTXT`/`CMAP`/`PAL` instead of this
+doc's guessed `CSCP`/`SHAP`/`FILM`/`SYMB`. `SCRP` in particular is
+very likely what this doc's heuristic parser misread as `CSCP`. Treat
+`SHAPFILE`/`FILMFILE`/`SYMB` chunk names throughout this doc as
+unconfirmed until `INCIDENT.S00` gets a proper, non-heuristic parse.
+
 **File order is not playback order.** The first ~15 scene blocks in
 the raw file are almost entirely reusable `doit`-named launch-deck
 templates plus the `LoseFinale` ending -- not the intro. The real

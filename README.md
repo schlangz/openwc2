@@ -26,15 +26,22 @@ other in-game cutscene. See `docs/` for the full write-up.
   traced boot chain from `_main` through the opening logo screens.
 - [`docs/incident_s00_format.md`](docs/incident_s00_format.md) -- the
   `.S00` scene-script container format (`FORM`/`SCNE`/`SHAPFILE`/
-  `FILMFILE`/`SYMB` chunks), plus a full catalog of the 115 named
-  scenes found in `INCIDENT.S00`.
+  `FILMFILE`/`SYMB` chunks -- some tag names provisional, see the
+  cross-reference doc), plus a full catalog of the 115 named scenes
+  found in `INCIDENT.S00`.
 - [`docs/cutscene_dispatcher.md`](docs/cutscene_dispatcher.md) -- the
   actual engine that plays cutscenes: the resource-type dispatcher,
-  the FORM-tag switch/interpreter, and the custom 20Hz PIT timer that
-  paces intro playback.
+  the FORM-tag switch/interpreter, the per-character mouth animator,
+  and the custom 20Hz PIT timer that paces intro playback.
 - [`docs/methodology.md`](docs/methodology.md) -- the live-tracing
   technique used to correlate static (file) addresses with live DOSBox
   memory addresses, reusable for further work on this binary.
+- [`docs/wc2re_cross_reference.md`](docs/wc2re_cross_reference.md) --
+  cross-check against the *Kilrathi Saga* Win32 reconstruction's real,
+  symbol-rich source: confirms most of the FORM-container tag set
+  directly, and corrects an earlier mislabeled DOS function (it's the
+  per-character speaker-mouth animator, not a decompressor) -- includes
+  the real per-letter mouth-shape/duration tables.
 
 ## Tooling
 

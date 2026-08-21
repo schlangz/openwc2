@@ -119,38 +119,70 @@ uint FUN_6308_04b0(undefined2 param_1, undefined4 param_2)
 }
 ```
 
-This is the **9-case switch dispatch** matching the 9 real chunk tags
-seen in the format (`FORM`/`SCNE`/`CSCP`/`SHAP`/`FILM`/`SPRT`/`SYMB`/
-`SEQU`/`PLNE`). The exact classifier-byte-to-tag mapping (`char -
-0x3b`, cases 0-8) isn't byte-for-byte proven against each tag name --
-that would need tracing `func_0x000106cd`/`func_0x0000fc21` (the
-char-read primitives) precisely. What *is* proven: this is a real,
-general chunk-tag switch with 9 substantial, distinct handlers,
-confirmed reachable with real cross-references (3 real call sites from
-`ovr_module_182_seg18E8`, per Ghidra's own analysis) and directly tied
-by live evidence to the actual `SCNE` tag during real playback.
+This is the **9-case switch dispatch** matching a chunk-tag format with
+roughly 9 distinct FORM subtypes. The exact classifier-byte-to-tag
+mapping (`char - 0x3b`, cases 0-8) isn't byte-for-byte proven against
+each tag name -- that would need tracing `func_0x000106cd`/
+`func_0x0000fc21` (the char-read primitives) precisely. What *is*
+proven: this is a real, general chunk-tag switch with 9 substantial,
+distinct handlers, confirmed reachable with real cross-references (3
+real call sites from `ovr_module_182_seg18E8`, per Ghidra's own
+analysis) and directly tied by live evidence to the actual `SCNE` tag
+during real playback.
 
-## Layer 3: the decompressor (`OVR_142_seg1858`, overlay)
+The originally-guessed 9-tag set (`FORM`/`SCNE`/`CSCP`/`SHAP`/`FILM`/
+`SPRT`/`SYMB`/`SEQU`/`PLNE`, from this project's own heuristic
+byte-scan of `INCIDENT.S00`) only partially survives cross-checking
+against `wc2-re`'s real, compiler-verified tag comparisons -- see
+`wc2re_cross_reference.md`. Confirmed real tags there: `FORM`, `DATA`,
+`SCRP` (not `CSCP` -- likely a heuristic-parser misread), `SCNE`,
+`PLNE`, `SEQU`, `SPRT`, `HOTR`, `HTXT`, `CMAP`, `PAL`. No `SHAP`/
+`FILM`/`SYMB`/`CSCP` 4-byte tag compare was found in `wc2-re` at all;
+`incident_s00_format.md`'s own `SHAPFILE`/`FILMFILE`/`SYMB` chunk
+names should be treated as provisional pending a proper (non-heuristic)
+parse of that file.
+
+## Layer 3: the speaker mouth animator (`OVR_142_seg1858`, overlay)
+
+**Corrected** -- originally mislabeled "the decompressor" based on the
+DOS side alone; cross-checking against the *Kilrathi Saga* Win32
+reconstruction (`wc2-re`) identified it properly. See
+`wc2re_cross_reference.md` for the full cross-check.
 
 Reached via the indirect call gate in case 7 above. The module's own
-entry point (`ovr_module_142_seg1858`, Ghidra `6745:0000`) is a
-low-level token/character decoder for an LZ-style compression scheme:
-reads one byte, classifies it by range (high-bit-set -> strip and
-treat as an extended code; control-range 0x00-0x1F -> special/
-terminator handling, including one specific `'T'` followed by `'H'`
-2-byte escape sequence; otherwise -> two table lookups keyed by the
-byte value) to produce a `(length, repeat-count)`-style pair, which
-gets written into fields of a passed-in decoder-state struct. The
-actual bulk-copy loop this feeds (`repe movsw`/`rcl cx,1`/`repe
-movsb`, a classic odd-byte-aware block copy) was observed directly
-live, mid-execution, during intro playback.
+entry point (`ovr_module_142_seg1858`, Ghidra `6745:0000`) is **the
+per-character speaker-mouth animator** -- the DOS equivalent of
+`wc2-re`'s `AnimateCutsceneSpeakerMouth(SceneFlicObject *sprite)`
+(`src/screens.c`). It reads one character of the currently-displaying
+speech text and classifies it: high-bit-set -> strip and treat as an
+extended/accented character; control range `0x00`-`0x1F` -> silence/
+terminator handling; the digraph `'T'` followed by `'H'` -> a
+dedicated combined mouth shape (`frame = 8, duration = 3`, hardcoded,
+matching `wc2-re`'s own identical special case exactly); otherwise ->
+**two table lookups keyed by the character value**
+(`local_4 = *(char *)(local_3 + -0x6aec)` / `local_5 = *(char
+*)(local_3 + -0x6a6c)`, Ghidra rendering a `table[char]`-style array
+index as this pointer-arithmetic subtraction) producing a `(mouth
+frame, hold duration)` pair, written into fields of the passed-in
+sprite/state struct.
+
+**There is no separate fixed "mouth fps."** Hold time per shape is
+`speechSpeed * duration[character]`, in ticks of whatever the ambient
+cutscene clock is (the same 20Hz timer below) -- some letters hold
+noticeably longer than others by design (see the real per-letter
+tables in `wc2re_cross_reference.md`), not a constant interval.
+
+The `repe movsw`/`rcl cx,1`/`repe movsb` bulk-copy loop observed live,
+mid-execution, feeding off this function's output is consistent with
+updating the sprite's displayed frame/cached glyph state, not LZ
+decompression as originally guessed.
 
 The caller (traced live from the stack, in a different function
 within this same module, around offset `0x1900`) builds the call by
 pulling fields at offsets `+0x06`/`+0x08`/`+0x0A`/`+0x0E` out of a
-passed-in structure pointer (`ES:BX`) -- consistent with a generic
-"decompress resource described by this descriptor struct" call
-signature, reused across whatever asset type reaches this path.
+passed-in structure pointer (`ES:BX`) -- plausibly the sprite/speaker
+object and the active text cursor, consistent with "advance this
+speaker's mouth by one character."
 
 ## The 20Hz cinematic timer
 
@@ -198,7 +230,10 @@ starts. Two independently reverse-engineered codebases -- one live DOS
 disassembly, one Win32 decompile-reconstruction -- landing on the
 identical rate is strong convergent evidence this is a real,
 deliberate design constant carried across both versions of the
-engine, not a coincidence of either analysis.
+engine, not a coincidence of either analysis. See
+`wc2re_cross_reference.md` for the fuller picture -- the same
+cross-check that surfaced this also corrected Layer 3 above and
+confirmed most of the FORM-container tag set directly.
 
 **Relationship between the timer and the dispatcher above**: proven at
 the call-chain/global-state level (the 20Hz rate gets installed as
