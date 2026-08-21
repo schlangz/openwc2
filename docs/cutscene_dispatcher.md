@@ -167,10 +167,21 @@ frame, hold duration)` pair, written into fields of the passed-in
 sprite/state struct.
 
 **There is no separate fixed "mouth fps."** Hold time per shape is
-`speechSpeed * duration[character]`, in ticks of whatever the ambient
-cutscene clock is (the same 20Hz timer below) -- some letters hold
-noticeably longer than others by design (see the real per-letter
-tables in `wc2re_cross_reference.md`), not a constant interval.
+`speechSpeed * duration[character]`, in ticks of the *active* clock
+rate -- some letters hold noticeably longer than others by design (see
+the real per-letter tables in `wc2re_cross_reference.md`), not a
+constant interval. On the Win32 side that "tick" is confirmed to be a
+fixed 1/60s unit of *real elapsed wall-clock time*
+(`g_nInputClock_005c84a8`), independent of and finer-grained than the
+20Hz render rate -- and that mismatch is the direct, confirmed cause
+of Kilrathi Saga's cutscene mouth/audio desync. See
+`wc2re_cross_reference.md`'s "Why Kilrathi Saga's cutscenes desync"
+section for the full analysis and a proposed fix. The DOS duration
+table almost certainly works the same way in spirit (a real-time tick
+unit, not a frame-count) -- but on DOS both the render cadence and the
+tick source are the *same* hardware-locked 20Hz PIT interrupt (see the
+timer section below), so the two can never drift apart the way they do
+on Win32.
 
 The `repe movsw`/`rcl cx,1`/`repe movsb` bulk-copy loop observed live,
 mid-execution, feeding off this function's output is consistent with

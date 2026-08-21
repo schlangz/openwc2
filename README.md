@@ -39,9 +39,11 @@ other in-game cutscene. See `docs/` for the full write-up.
 - [`docs/wc2re_cross_reference.md`](docs/wc2re_cross_reference.md) --
   cross-check against the *Kilrathi Saga* Win32 reconstruction's real,
   symbol-rich source: confirms most of the FORM-container tag set
-  directly, and corrects an earlier mislabeled DOS function (it's the
-  per-character speaker-mouth animator, not a decompressor) -- includes
-  the real per-letter mouth-shape/duration tables.
+  directly, corrects an earlier mislabeled DOS function (it's the
+  per-character speaker-mouth animator, not a decompressor), includes
+  the real per-letter mouth-shape/duration tables, and traces the root
+  cause of Kilrathi Saga's cutscene mouth/audio desync to a confirmed
+  units mismatch plus a real frame-timing bug -- with a proposed fix.
 
 ## Tooling
 

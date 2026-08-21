@@ -123,12 +123,110 @@ fallback values), not real letter data.
 **So: no fixed "mouth fps" exists to find.** Hold time for a given
 mouth shape is `speechSpeed(default 1) * duration[char]` ticks -- 1
 tick for almost every letter, 2 for `D`/`L`/`W`/`X`, 3 for the `TH`
-digraph, against whatever the ambient cutscene tick rate is (the same
-20Hz timer documented in `cutscene_dispatcher.md`). `wc2-re`'s own SDL
-port additionally clamps this to a minimum
-(`WC2_CUTSCENE_MOUTH_MIN_TICKS = 3`, `include/wc1.h`) -- explicitly
-commented there as *not* present in the original, added only so the
-SDL port's frame pacing doesn't make already-short holds imperceptible.
+digraph. On Win32 that "tick" is a fixed 1/60s unit of real elapsed
+time (see the next section) -- `wc2-re`'s own SDL port additionally
+clamps this to a minimum (`WC2_CUTSCENE_MOUTH_MIN_TICKS = 3`,
+`include/wc1.h`) -- explicitly commented there as *not* present in the
+original, added only so the SDL port's frame pacing doesn't make
+already-short holds imperceptible. That comment is itself a clue to
+the bug below -- the SDL port's author independently rediscovered that
+the original durations are too short to reliably render, without (as
+far as this analysis found) tracing all the way back to why.
+
+## Why Kilrathi Saga's cutscenes desync
+
+Traced `g_nInputClock_005c84a8` -- the clock `AnimateCutsceneSpeakerMouth`
+compares `waitStart`/`waitTicks` against -- to its actual update site
+(`winmain.c`, run once per frame):
+
+```c
+g_nInputClock_005c84a8 = GetTickCount();
+g_nInputClock_005c84a8 -= g_dwGameClockStart_005d12b8;
+g_nInputClock_005c84a8 *= 60;
+g_nInputClock_005c84a8 /= 1000;
+```
+
+This is **real, continuously-resynced wall-clock time, expressed in
+1/60-second units** -- not milliseconds, not a frame counter. Confirmed
+independently: `WC2_CUTSCENE_MOUTH_MIN_TICKS = 3` (above) is exactly
+`3/60s = 50ms`, matching the engine's own 20fps (`50ms`) cinematic
+frame period -- the SDL port's clamp is, in its own units, "never hold
+for less than one 20fps frame."
+
+**The bug**: the mouth-duration table is authored in this same 1/60s
+unit, but almost every letter has `duration = 1` -- a **16.7ms** hold
+at `speechSpeed = 1`, well *under* one 20fps frame period (50ms).
+Since mouth state only advances when something actually calls
+`AnimateCutsceneSpeakerMouth` again -- which happens once per rendered
+frame, not on an independent fixed-rate update -- any requested hold
+shorter than the current frame interval is meaningless: by the time
+the next check happens, more real time has already elapsed than was
+asked for, so the shape always advances "as fast as frames get drawn,"
+never at its own intended rate. The comparison against `g_nInputClock`
+is correctly wall-clock-based in principle; what's missing is
+decoupling *how often that comparison gets evaluated* from *how often
+a frame gets rendered*.
+
+That would just mean "mouth flips once per frame, always" if the frame
+rate were rock-steady -- annoying, but not "extreme desync." It becomes
+that once combined with something already found and documented in this
+project's own DOS-side timer analysis, that carries over structurally
+here too: Win32's frame pacing is not hardware-clocked the way DOS's
+PIT-driven interrupt is. It runs through `timeSetEvent`/`timeGetTime`
+plus a busy-wait `Sleep(0)` throttle loop (`ThrottleFrameAndDrawFps`,
+`screen.c`) -- inherently jittery, worse on modern fast/multi-core
+hardware than in 1996 -- and, concretely, the *Kilrathi Saga* source
+has a confirmed real bug where `SetCinematicFrameTiming(70.0f)` fires
+the instant a line of speech finishes (`sound.c`, `ServiceSoundSystem`),
+spiking the cinematic rate from 20fps to 70fps for a window right at
+the exact moment mouth state needs to settle back to neutral. Audio
+keeps playing at its own real-time-accurate pace throughout (driven by
+the sound hardware/API, unaffected by any of this) -- visual mouth
+state, being coupled to however fast frames happen to render rather
+than to the clock it's nominally compared against, drifts against it.
+Over a whole cutscene with many speech lines, each one hitting this at
+its end, that compounds into exactly the kind of pervasive, worsening
+desync reported for this game.
+
+DOS structurally cannot exhibit this: the frame-advance interrupt and
+the tick source used for duration-counting are the *same* hardware PIT
+interrupt (see `cutscene_dispatcher.md`'s timer section), so "requested
+hold shorter than one frame" cannot happen there -- the frame period
+*is* the tick, by construction, not merely convention.
+
+### A concrete fix for `wc2-re`
+
+Not tested against the actual codebase -- an architectural
+recommendation from this analysis, not a submitted/verified patch.
+
+1. **Decouple cutscene-object state advancement (`AnimateCutsceneSpeakerMouth`
+   and the general `waitTicks`/`waitStart` consumption in `screens.c`)
+   from the render/frame loop.** Run it on its own fixed-rate update --
+   ideally every real 1/60s tick (matching `g_nInputClock`'s own native
+   unit exactly), independent of how often a frame actually gets drawn
+   to screen. This is the standard "decouple simulation rate from
+   render rate" fix, and it directly restores the property the DOS
+   binary gets for free from having one shared hardware clock: state
+   advances at the rate the data was authored for, rendering just
+   displays whatever the current state is whenever it gets around to
+   drawing a frame. This is the real fix -- everything below is
+   secondary/defense-in-depth.
+2. **Fix the confirmed `SetCinematicFrameTiming(70.0f)` bug directly**
+   (`sound.c`, fires when `g_nSpeechCompletionDelay_004a265c > 20`
+   after a speech sound stops). Whatever the intent was (snapping back
+   to a faster non-speaking rate), 70fps is not a value used anywhere
+   else in the engine and produces a jarring rate spike at exactly the
+   worst moment. Likely candidates: it should match whatever rate was
+   active *before* speech started (probably the default/menu rate, not
+   a magic 70), or this call should simply be removed if its only
+   effect is this spike.
+3. **Defense in depth, once (1) is fixed**: `ThrottleFrameAndDrawFps`'s
+   busy-wait (`while (timeGetTime() < deadline) Sleep(0)`) could be
+   replaced with a higher-resolution wait (`timeBeginPeriod(1)` +
+   `Sleep` for the bulk of the interval, spin only the remainder) for
+   more consistent real frame pacing generally -- worthwhile on its own
+   merits, but not the root cause here, and not sufficient by itself
+   without (1).
 
 ## The Win32-side resource loader (`FetchDiskPacketRetrying`, `disk.c`)
 
