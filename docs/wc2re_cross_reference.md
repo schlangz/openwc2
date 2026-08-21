@@ -249,9 +249,29 @@ is source-level reasoning from tracing the two opcodes and the flag
 semantics, not something verified against a live capture -- worth
 testing specifically for the same-character-repeat case.
 
+### Bug 4: the same unsynchronized-flag problem, at the tail end this time
+
+Bug 3's fix confirmed working in-game, but the mouth still ran on for
+a while after audio genuinely stopped -- the *other* end of the same
+underlying issue. `g_bSpeechSoundActive_004a2660` (what bug 3's fix
+gates on) doesn't clear the instant audio stops -- it stays `1`
+throughout `ServiceSoundSystem`'s own ~20-tick grace period after
+audio is first observed not-playing, because that delay exists to
+decide *when to force-advance to the next script line*
+(`g_nInputPressCount_0049c258`), not to decide whether the mouth
+should still be moving. Two different concerns were sharing one flag.
+
+**Fix applied**: check the sound object's own live state directly
+(`ix_sound_is_playing(g_pSpeechSound_004a2658)`) as an additional gate
+in `AnimateCutsceneSpeakerMouth`, independent of
+`g_bSpeechSoundActive_004a2660`'s own timing -- stops animating the
+instant real playback stops. Leaves `ServiceSoundSystem`'s grace-period/
+force-advance logic completely untouched; this is purely an additive
+check in the mouth animator.
+
 ### Status
 
-All three fixes are implemented, syntax-verified against the project's
+All four fixes are implemented, syntax-verified against the project's
 real compiler flags, and pushed to a branch on this project's `wc2-re`
 fork for in-game testing before any upstream PR -- see that repo's own
 commit history on branch `fix/cutscene-speech-complete-framerate-spike`
